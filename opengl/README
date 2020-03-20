@@ -1,0 +1,6 @@
+api contains the api as provided by Khronos.
+
+specfiles contains the older, nonxml specfiles that used to be provided by Khronos.
+
+readxml.rkt is to become the program that reads tha api files and generates the new bindings.  It will replace readspec.rkt, which read the now obsolete specfiles.
+

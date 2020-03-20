@@ -1,6 +1,20 @@
 Automatically generated OpenGL bindings for Racket.
 
-Generate bindings:
- racket readspec.rkt > generated/gl_specs.inc
+Contact: Hendrik Boom  hendrik@topoi.pooq.com
 
-Contact: Stephan Houben stephanh42@gmail.com
+Former contact: Stephan Houben stephanh42@gmail.com
+
+
+This project has been forked from the original
+   https://github.com/stephanh42/RacketGL
+This forked version is not yet usable; don't even try.
+
+I am posting this fork in public in case anyone wishes to comment or assist
+in some way, or even just see what's going on.
+
+Khronos has replaced the specfiles used by Stephan Houben's version
+with new ones written in xml.  The difference is so severe that the
+entire program that reads the specfiles to produce the substance of
+the openGL Racket binding has to be replaced.
+
+-- hendrik
