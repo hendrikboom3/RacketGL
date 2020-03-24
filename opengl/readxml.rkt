@@ -229,7 +229,7 @@
 (define anomaly output) ; the file to which to report anomalies
 ; NOTE: the distinction between output and anomaly is currently not well respected
 
-(fprintf output "#lang racket~n")
+;(fprintf output "#lang racket~n") -- to be included, not required
 (define export-list '())
 
 ; --- message conventions
@@ -245,27 +245,40 @@
      to avoid diverting my attention by a plethora of currently irrelevnt messages.
   -- hendrik
 |#
-; --- processing starts here.
 
 (define (unique list message . messageargs)
   ; return the only element of the list, or '() if there is none.
   ; Produce message if not just one. 
   (if (equal? 1 (length list)) (car list)
      (begin
-       (apply fprintf (cons output (cons message messageargs)))
+       (apply fprintf (cons anomaly (cons message messageargs)))
        (if (null? list) list (car list))
        )
      )
 )
 
-(define (process-comment stuff) (fprintf anomaly "; there was a comment here.")) ; TODO
+(define (atmostone list message . messageargs)
+  ; return the first element of the list, or '() if there is none.
+  ; Produce message if there are more than one element in the list.
+     (if (null? list) '()
+         (begin
+           (when ( < 1 (length list))
+               (apply fprintf (cons anomaly (cons message messageargs)))
+               )
+           (car list)
+           )
+    )
+)
+; --- processing starts here.
 
-(define (process-types stuff) (fprintf anomaly "; TODO: process types"))
+(define (process-comment stuff) (fprintf anomaly "; TODO: process comments.~n"))
 
-(define (process-groups stuff) (fprintf anomaly "; TODO: process groups"))
+(define (process-types stuff) (fprintf anomaly "; TODO: process types~n"))
+
+(define (process-groups stuff) (fprintf anomaly "; TODO: process groups~n"))
 
 (define (process-enum-header header)
-  (fprintf output "; TODO: enum-header ~s~n" header)
+  (fprintf anomaly "; TODO: enum-header ~s~n" header)
   )
 
 (define (rehexify v)
@@ -287,34 +300,44 @@
       (define names '())
       (define values '())
       (define aliases '())
+      (define apis '())
           
       (for ([attr xmlattributes])
         (match attr
           [(list 'value v) (set! values (cons v values))]
           [(list 'name n) (set! names (cons n names))]
           [(list 'alias a) (set! aliases (cons a aliases))]
-          [(cons 'comment _) '()]  ; TODO: write comments
-          [(cons 'type _) '()] ; TODO: Do I need to process types in enumerations?
-          [(cons 'api _) '()] ; TODO:  What do I do with API?
-          [ other (fprintf output "; TODO: other enum attribute ~s~n" other)]
-          ;; TODO: Do I have to do anything with type or api?
+          [(cons 'comment _) (fprintf anomaly "; LATER: write comments~n")]
+          [(cons 'type _)
+           (fprintf anomaly "; LATER: Do I need to process types in enumerations?~n")]
+          [(list 'api api)
+           (set! apis (cons (strip-white api) apis))
+           (fprintf anomaly "; LATER:  What do I do with API? ~s from ~s apis ~s~n"
+                    api attr apis)]
+          [ other (fprintf anomaly "; LATER: other enum attribute ~s~n" other)]
           )
         )
-      (unique names "; TODO not just one name in enum ~s~n" names)
-      (unique values "; TODO not just one value in enum ~s ~s~n" names values)
-      (for ([name names] [value values])
-        (fprintf output "~s~n" (list 'define name (rehexify value)))
-        #;(set! export-list (cons name export-list))
-        (fprintf output "~s~n" (list 'provide name))
-        (for ([a aliases])
-          (fprintf output "~s~n" (list 'define a (rehexify value)))
-          (fprintf output "; alias for ~s~n " name)
-          #;(set! export-list (cons a export-list))
-          (fprintf output "~s~n" (list 'provide a))
-          ))
+      (unique names "; TODO: not just one name in enum ~s~n" names)
+      (unique values "; TODO: not just one value in enum ~s ~s~n" names values)
+      (define api (atmostone apis "; TODO: not just one api. ~s~n" apis))
+      (fprintf anomaly ";;;;;api is ~s.~n" api)
+      (unless (member api '("gles2"))
+         #| This is an opengl binding, not a gles binding
+         opengl and gles have different definitions for some symbols,
+         but Khronos lists all of them in the opengl registry.
+         |#
+        (for ([name names] [value values])
+          ; and there should be only one of each, so only one iteration.
+          (fprintf output "(define ~a ~a)~n" name (rehexify value))
+          (fprintf output "~s~n" (list 'provide name))
+          (for ([a aliases])
+            (fprintf output "; alias for ~s~n" a)
+            #;(fprintf output "~a~n" (list 'provide a))
+            ))
+        )
       ]
-    [(cons 'unused rest) (fprintf output "; unused ~s~n" item)]
-    [ _ (fprintf "; unknown-enum-item ~s~n" item)]
+    [(cons 'unused rest) (fprintf anomaly "; LATER: unused ~s~n" item)]
+    [ _ (fprintf anomaly "; unknown-enum-item ~s~n" item)]
     )
   )
 
@@ -332,7 +355,7 @@
   (match enums [(cons header enum-list)
                 (process-enum-header header)
                 (process-enum-list enum-list)]
-    [ _ (fprintf "strnge argument to enums. ~s~n" enums) ]
+    [ _ (fprintf "strange argument to enums. ~s~n" enums) ]
     ))
 
 ; Rename types
@@ -342,15 +365,18 @@
   (define names '())
   (for [(p param)]
     (match p
-      [(list '@ (list 'group g)) void] ; TODO: firgure out what these groups are for
-      [(list 'ptype t) (set! types (cons t types))] ; TODO: guard against multiple definition
-      [(list 'name n) (set! names (cons n names))] ; TODO: guard against multiple definition
-      [_ (fprintf output "strange parameter specifier ~s~n" p)]
+      [(list '@ (list 'group g))
+       (fprintf anomaly "; LATER: figure out what these groups in param's are for.~n")]
+      [(list 'ptype t) (set! types (cons t types))]
+      [(list 'name n) (set! names (cons n names))]
+      [_ (fprintf anomaly "; TODO: strange parameter specifier ~s~n" p)]
     ))
-  (define type (unique types "; TODO not just one type ~s in param ~s~n" types param))
-  (define name (unique names "; TODO not just one name ~s in param ~s~n" names param))
+  (define type (unique types "; TODO: not just one type ~s in param ~s~n" types param))
+  (define name (unique names "; TODO: not just one name ~s in param ~s~n" names param))
   (list name ': (racket-type type))
   )
+
+(define (strip-white s) (string-trim s " " #:repeat? #t))
 
 (define (process-command command)
   (define name '())
@@ -362,17 +388,17 @@
     (match item
       [(list 'proto t (list 'name n))
        (set! resulttype
-             (if (and (string? t) (equal? "void" (string-trim t " " #:repeat? #t))) '_void t))
+             (if (and (string? t) (equal? "void" (strip-white t))) '_void t))
        (set! name n)
-       #;(fprintf output "~s~n" (list 'resulttype 'is resulttype))
        ]
-      [(cons 'proto rest) (fprintf output "TODO strange proto in command ~s:" command)]
+      [(cons 'proto rest)
+       (fprintf anomaly "; TODO: strange proto in command: ~s~n" command)]
       [(cons 'param rest) (set! params (cons (process-param rest) params))]
       [(list 'glx (list '@ (list 'type t) (list 'opcode o)))
        (set! glxtype t)
        (set! opcode o)
-       (fprintf output ";TODO whatever do i do with item ~s in command ~s~n" item name)]
-      [ _ (fprintf output ";TODO unonn command item ~s~n" item) ]
+       (fprintf anomaly "; TODO: whatever do i do with item ~s in command ~s~n" item name)]
+      [ _ (fprintf anomaly "; TODO: unknown command item ~s~n" item) ]
       ))
   (fprintf output "~s~n"
            (list 'define-gl name (length params)
@@ -382,25 +408,24 @@
                    'check-gl-error ; TODO: when to generate check-gl-error?
                    )
            )
-  (fprintf output "~s~n"
-           (list "TODO: what to do with" 'type glxtype 'opcode opcode))
+  (fprintf anomaly "; TODO: what to do with type ~s opcode ~s~n" glxtype opcode)
   )
 
 (define (process-commands commands)
   (for [(command commands)]
     (match command
       [(list '@ (list 'namespace namespace))
-       (fprintf output "~n; TODO: namespace for commands is ~s~n" namespace)
+       (fprintf anomaly "; TODO: namespace for commands is ~s~n" namespace)
        ; TODO: Why is there a newline within namespace?  Is there still?
         ]
       [(cons 'command commanddef)
        (process-command commanddef)]
       [(cons (cons 'namespace spacedef) rest)
-       (fprintf "; namespaceTODO\n")]
+       (fprintf "; TODO: namespace~n")]
       [(cons (cons '@ stuff) rest)
-       (fprintf output "TODO at-item in ommand list ~s~n" stuff)]
+       (fprintf anomaly "; TODO: at-item in command list ~s~n" stuff)]
       ['() '()]
-      [ _ (fprintf output "TODO: unrecognised command~s~n" command)]
+      [ _ (fprintf anomaly "; TODO: unrecognised command~s~n" command)]
       ))
   )
 
@@ -411,7 +436,7 @@
     [(cons 'groups rest) (process-groups rest)]
     [(cons 'enums rest) (if do-enums (process-enums rest) void)]
     [(cons 'commands rest) (process-commands rest)]
-    [ _ (fprintf output "; TODO strange registry item ~s~n" (car item))]
+    [ _ (fprintf anomaly "; TODO: strange registry item ~s~n" (car item))]
     ))
 
 (define (process-registry reg)
