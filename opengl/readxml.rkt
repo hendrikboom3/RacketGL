@@ -232,7 +232,31 @@
 (fprintf output "#lang racket~n")
 (define export-list '())
 
+; --- message conventions
+
+#|
+  This program complains whenever it receives unexpected input.
+  This usualy arises because the program is incomplete, or was
+  because the author misunderstood the structure of the xml input file.
+  Such messages should be embedded in the output as comments.
+  They should always contain the word "TODO" or "LATER"
+  "TODO" is used for things under active development.
+  "LATER" is used for matters intentionally deferred for later.
+     to avoid diverting my attention by a plethora of currently irrelevnt messages.
+  -- hendrik
+|#
 ; --- processing starts here.
+
+(define (unique list message . messageargs)
+  ; return the only element of the list, or '() if there is none.
+  ; Produce message if not just one. 
+  (if (equal? 1 (length list)) (car list)
+     (begin
+       (apply fprintf (cons output (cons message messageargs)))
+       (if (null? list) list (car list))
+       )
+     )
+)
 
 (define (process-comment stuff) (fprintf anomaly "; there was a comment here.")) ; TODO
 
@@ -250,6 +274,7 @@
       v
 ))
 
+
 (define (process-enum-item item)
   (match item
     [ (list 'enum (cons '@ xmlattributes))
@@ -258,8 +283,7 @@
                                             ;(or (list 'vendor _) (list 'comment _ ) (list 'type _ ) (list 'api _)) ...
                                             )
                                  '() ;; placeholder for generating enum translation
-                                 ]           )
-              
+                                 ]           )              
       (define names '())
       (define values '())
       (define aliases '())
@@ -276,10 +300,8 @@
           ;; TODO: Do I have to do anything with type or api?
           )
         )
-      (when (not (equal? (length names) 1))
-          (fprintf output "; TODO too many names in enum ~s~n" names))
-      (when (not (equal? (length names) 1))
-          (fprintf output "; TODO too many values i enum ~s ~s~n" names values))
+      (unique names "; TODO not just one name in enum ~s~n" names)
+      (unique values "; TODO not just one value in enum ~s ~s~n" names values)
       (for ([name names] [value values])
         (fprintf output "~s~n" (list 'define name (rehexify value)))
         #;(set! export-list (cons name export-list))
@@ -316,15 +338,17 @@
 ; Rename types
 
 (define (process-param param)
-  (define type '())
-  (define name '())
+  (define types '())
+  (define names '())
   (for [(p param)]
     (match p
       [(list '@ (list 'group g)) void] ; TODO: firgure out what these groups are for
-      [(list 'ptype t) (set! type t)] ; TODO: guard against multiple definition
-      [(list 'name n) (set! name n)] ; TODO: guard against multiple definition
+      [(list 'ptype t) (set! types (cons t types))] ; TODO: guard against multiple definition
+      [(list 'name n) (set! names (cons n names))] ; TODO: guard against multiple definition
       [_ (fprintf output "strange parameter specifier ~s~n" p)]
     ))
+  (define type (unique types "; TODO not just one type ~s in param ~s~n" types param))
+  (define name (unique names "; TODO not just one name ~s in param ~s~n" names param))
   (list name ': (racket-type type))
   )
 
