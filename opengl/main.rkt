@@ -156,7 +156,8 @@
   (syntax-id-rules (_pointer/intptr)
     [_pointer/intptr (type: _pointer pre: (x => (convert-vbo-pointer x)))]))
 
-(include "generated/gl_specs.inc")
+#;(include "generated/gl_specs.inc")
+(include "generated/api.inc")
 
 (define (split-spaces str)
   (regexp-split #px"\\s+" str))
