@@ -28,6 +28,7 @@
   ; This may be useful when comparing generated code with a previous version.
 
 (define messages-in-generated-code #t)
+(define separate-trace #t) ; whether trace output goes into a separate file
 
 ; --- message conventions
 
@@ -44,8 +45,14 @@
 |#
 
 (define output (open-output-file "/home/hendrik/dv/opengl-project/RacketGL/opengl/generated/api.inc" #:exists 'replace))
+#;(define output (current-output-port))
 ;  regular output file.
 ; TODO: use call-with-output-port
+
+(define trace (if separate-trace
+                  (open-output-file "/home/hendrik/dv/opengl-project/RacketGL/opengl/traceout" #:exists 'replace)
+                  output)
+  )
 
 (define anomaly
   (if suppress-messages (open-output-nowhere)
@@ -409,7 +416,7 @@
          (hash-ref vector-to-contract type type))))
     (else type)))
 
-(define (racket-predicate ctype)
+(define (racket-predicate ctype) ; TODO TODO TODO TODO
   (cond ; First, exceptions that cleanup-type-for-doc doesn't handle yet.
     ( (equal? ctype '())
       (fprintf anomaly "; TODO: Null type ~s~n" ctype) '())
@@ -522,7 +529,7 @@
 (struct prototype (ptype name group))
 
 (define (process-proto proto)
-  ;; I wonder why Khronos considers the parameter not to be part of the proto?
+  ;; I wonder why Khronos considers the param not to be part of the proto?
   ;; They split the identifier's type into two separate XML elements.
   (define ptypes '()) ; should be only one
   (define names '()) ; should be only one
@@ -559,14 +566,48 @@
   )
 
 (define (strip-white s) (string-trim s " " #:repeat? #t))
+; example
+#;(define (tuple-print tuple port mode)
+  (when mode (write-string "<" port))
+  (let ([l (tuple-ref tuple)]
+        [recur (case mode
+                 [(#t) write]
+                 [(#f) display]
+                 [else (lambda (p port) (print p port mode))])])
+    (unless (zero? (vector-length l))
+      (recur (vector-ref l 0) port)
+      (for-each (lambda (e)
+                  (write-string ", " port)
+                  (recur e port))
+                (cdr (vector->list l)))))
+  (when mode (write-string ">" port)))
 
-(struct parameter (type name len const? stars))
+ 
+#;(struct tuple (ref)
+        #:methods gen:custom-write
+        [(define write-proc tuple-print)])
 
-(define (primitive-ctype t2)
+(define (parameter-print p port mode)
+  (fprintf port "parameter{~s ~s ~s ~s ~s}"
+           (parameter-type p) (parameter-name p) (parameter-len p) (parameter-const? p) (parameter-stars p)
+           )
+  )
+
+; A parameter structure records the result of parsing an xml param entity.
+; It still beeds to be translated into both the racket and the ctype notations.
+
+(struct parameter
+ 
+  (type name len const? stars)
+  #:methods gen:custom-write [(define write-proc parameter-print)]
+  )
+
+(define (primitive-ctype t2) ; TODO TODO TODO 
   (hash-ref basic-type-map t2 t2)
   )
   
-(define (process-param param)
+(define (parse-param param)
+  ; parse a param entity and produce a struct parameter object
   (define types '())
   (define names '())
   (define lengths '())
@@ -582,13 +623,13 @@
       [(or (list '@ (list 'len len))
            (list '@ (list 'len len) (list 'group _))) ; TODO: what's group?
            (set! lengths (cons len lengths))
-           (fprintf anomaly "length ~s in parameter ~s~n" p param)
+           (fprintf anomaly "length ~s in param ~s~n" p param)
            ]
       ["const " (set! const? #t)
-                (fprintf anomaly "const ~s in parameter ~s~n" p param)]
+                #;(fprintf anomaly "const ~s in param ~s~n" p param)] ; TODO: is this really an anomaly here?
       [" *" (set! stars ( + 1 stars))
-            (fprintf anomaly "star ~s in parameter ~s~n" p param)]
-      [_ (fprintf anomaly "; TODO: strange parameter specifier ~s~n" p)]
+            (fprintf anomaly "star ~s in param ~s~n" p param)]
+      [_ (fprintf anomaly "; TODO: strange param specifier ~s~n" p)]
     ))
   (define type (unique types
                        "; TODO: not just one type ~s in param ~s~n" types param))
@@ -602,32 +643,42 @@
 
 (define (param-to-contract) (void))
 
-(define (param->ctype param)
-  (fprintf anomaly "DEBUG: param->ctype ~s~n" param)
+(define (param->ctype param) ; TODO TODO TODO Should this be parameter->ctype?
+  #;(fprintf trace "DEBUG: param->ctype ~s~n" param)
   (match param
-    [(parameter type name len const? stars)
-     (fprintf anomaly "DEBUG: param->ctype ~s ~s ~s ~s ~s ~n"
-              type name len const? stars)
-     (define t (primitive-ctype type))
-     (fprintf anomaly "DEBUGt t ~s~n" t)
-#|     (when (equal? t "GLenum") (set! t '_int32))
+    [ (parameter (or '_byte '_char 'char "GLchar") name (or "COMPSIZE(name)" '()) #t 1)
+      (list #f name ': '_string*/utf-8 )]
+    [ (parameter "GLuint" name "n" #t 1)
+      (list #f name ': '(_u32vector i))]
+    [ (parameter "GLboolean" name "n" #f 1)
+      (list #t name ': '(_vector o _bool n))] ; the #t indicates that this parameter is used for output.
+    [ (parameter t "residences" l c s) ; debugging catchall; should not be used
+      (list #f "residences" ': parameter)]
+    [ (parameter t name (not '()) c? (not 0)) (list #f name ': '_cptr) ]
+    [ (parameter type name len const? stars)
+      (fprintf trace "DEBUG: param->ctype ~s ~s ~s ~s ~s ~n"
+               type name len const? stars)
+      (define t (primitive-ctype type))
+      (fprintf trace "DEBUGt t ~s~n" t)
+      #|     (when (equal? t "GLenum") (set! t '_int32))
      (when (equal? t "GLsizei") (set! t '_int32))
      (when (equal? t "GLuint") (set! t '_uint32))
      (when (equal? t "GLbyte") (set! t '_uint8))
      (when (equal? t "GLfloat") (set! t '_float))
 |#
-     (if (and (equal? stars 1)
+      #;(if (and (equal? stars 1)
               (or (equal? t '_byte)
                   (equal? t '_char) (equal? t 'char) (equal? t "GLchar") ; ><<><>
                   )
               (equal? len "COMPSIZE(name)") const?)
+         #| This could be match ( (parameter (or '_byte '_char 'char "GLchar) n "COMPSIZE(name)" #t 1) |#
          (set! t '_string*/utf-8)
          (when (or (not (equal? stars 0)) (not (null? len)))
              (set! t '_cptr)
              )
          )
-     (list name ': t)
-     ]
+      (list #f name ': t)
+      ]
     [ _ (fprintf anomaly "Unrecognised param ~s~n" param)
         param]
     )
@@ -658,16 +709,34 @@
     )
   )
     
-(define (params->ctypes params) ; params contains parameters in ???reverse order.
-  #;(fprintf output "DEBUG: params->ctypes ~s~n" params) ; <><>><
+(define (params->ctypes params) ; params contains parameters in ???reverse order
+  ; Return a list of the ctypes of the parameters, also in reverse order.
+  #;(fprintf trace "DEBUG: params->ctypes ~s~n" params) ; <><>><
+  (cond
+    ((null? params) '())
+    [(pair? params)
+     (define p (param->ctype (car params)))
+     (cons p (params->ctypes (cdr params)))
+     ]
+    (#t (fprintf anomaly "; What is ~s doing in my parameter list?~n" params) )
+    ))
+
+(define (get-output-ctypes params) ; params is a list of parameters in ???reverse order each in the (#t n : t) or (n : t) form
+  ; return a list of the output parameters, also in reerseorder.
+  ; Output parameters are parameters which point to memory
+  ; where the opengl function is expected to return results.
   (cond
     ((null? params) '())
     ((pair? params)
-     (cons (param->ctype (car params)) (params->ctypes (cdr params))))
-    (#t (fprintf anomaly "What is ~s doing in my parameter list?~n" params) )
+     (if (equal? (caar params) '#t)
+         (cons (cdar params) (get-output-ctypes (cdr params)))
+         (get-output-ctypes (cdr params))
+     ))
+    (#t (fprintf anomaly "; What is ~s doing in my parameter list?~n" params) )
     ))
 
 (define (process-command command)
+  (fprintf output "~n") ; TODO this line is temporary code
   (define name '()) ; TODO: check there's only one
   (define resulttype '()) ; TODO: check there's only one
   (define group '())
@@ -693,7 +762,7 @@
           ]
          [ _ (fprintf anomaly "; TODO: strange proto in command: ~s~n" command)]
          )]         
-      [(cons 'param rest) (set! params (cons (process-param rest) params))]
+      [(cons 'param rest) (set! params (cons (parse-param rest) params))]
       [(list 'glx (list '@ (list 'type t) (list 'opcode o)))
        (set! glxtype t)
        (set! opcode o)
@@ -705,16 +774,31 @@
        
       [ _ (fprintf anomaly "; TODO: unknown command item ~s~n" item) ]
       ))
+
   (when (null? name)
       #;(fprintf anomaly "; TODO: no name in command definition~n")
     (fprintf anomaly "; TODO: best try:~n #;")
     )
-  (fprintf anomaly "TODO: debug: Parameter list is ~s from command ~s~n" params command)
-  (fprintf anomaly "; DEBUGG ~s~n" (map parameter-type params))
+
+  (fprintf output "TODO: debug: Parameter list is ~s from command ~s~n" params command)
+  (fprintf trace "; DEBUGG ~s~n" (map parameter-type params))
+  (define args (params->ctypes params))
+  (define results (get-output-ctypes args))
+  (fprintf output "got results ~s from args ~s~n" results args)
+  (define rev-regular-type (cons '-> (map cdr args))) ; <><><><>
+  (define rev-type
+    (if (null? results)
+        (cons resulttype rev-regular-type)
+        (cons (cons 'values (cons 'result (map car results)))
+              (cons '-> (cons (list 'result ': resulttype) rev-regular-type)))
+        ))
+  (fprintf output "!!!!! rev-type ~s~n" rev-type)
   (fprintf output "~s~n"
-           (list 'define-gl name (length params)
-                   (reverse (cons resulttype (cons '-> (params->ctypes params))))
-                   (cons '->> (reverse (cons (racket-predicate resulttype)
+           (list 'define-gl name
+                 (length params) ; This is wroneg.  I suspect is has to be altered when there are output parameters, but I don't really know.
+                   (reverse rev-type)
+                   (cons '->> ; this part is still very wwrong and currently generates gibberish.
+                         (reverse (cons (racket-predicate resulttype)
                                              (map racket-predicate ; <><><>
                                                   #;(map parameter-type params)
                                                   (map caddr (params->ctypes params))
@@ -759,7 +843,7 @@
     [(cons 'groups rest) (process-groups rest)]
     [(cons 'enums rest) (if do-enums (process-enums rest) void)]
     [(cons 'commands rest) (process-commands rest)]
-    [ _ (fprintf anomaly "; TODO: strange registry item ~s~n" (car item))]
+    [ _ (fprintf anomaly "; TODO: strange registry item ~s~n" item)]
     ))
 
 (define (process-registry reg)
