@@ -28,8 +28,8 @@
   ; whether to suppress messages entirely
   ; This may be useful when comparing generated code with a previous version.
 
-(define messages-in-generated-code #f)
-(define separate-trace #t) ; whether trace output goes into a separate file
+(define messages-in-generated-code #t)
+(define separate-trace #f) ; whether trace output goes into a separate file
 
 ; --- message conventions
 
@@ -176,12 +176,12 @@
   Here are the functions that do this traslation.
 |#
 
-(define-type TType (U Symbol (Listof Any)  mode-dependent-type broken-type)) ;; TODO: make this more precise.
-(define-struct broken-type ([detail : Any])) ; used to represent erroneous types.
+(define-type TType (U Symbol (Listof Any)  mode-dependent-type Broken-type)) ;; TODO: make this more precise.
+(define-type Broken-type (List 'broken-type Any)) ; used to represent erroneous types.
 (define-struct mode-dependent-type ([in : TType] [out : TType]))
 
 (define-type CContract (U Symbol (Listof Any) broken-contract)) ; symbolis representation for a contract ;; TODO: make this more precise
-(define-struct broken-contract ([detail : Any])) ; used to represent contracts for erroneous types.
+(define-type broken-contract (List 'broken-contract Any)) ; used to represent contracts for erroneous types.
 ;; This contanis two types, one to be used for an input argument to a functino, the other for an output arguent.
 
 
@@ -323,7 +323,7 @@
       (cons "GLdouble" '_double*)
       (cons "GLintptr" '_intptr)
       ;    (cons "GLUtesselator*" _GLUtesselator*)
-      (cons "GLsizei" '_int32)
+      (cons "GLsizei" '_int32)  ;; TODO: SHould this e _int instead of _int32?
       (cons "GLvoid* const" (pointer-to '_void))
       ;    (cons "GLDEBUGPROCAMD" _GLDEBUGPROCAMD)
       (cons "GLboolean*" (pointer-to '_bool))
@@ -343,10 +343,12 @@
 (define basic-type-map : (HashTable String TType)
   (make-hash
     (list
+      (cons "void" '_void)  ; new!
       (cons "GLshort" '_int16)
       (cons "GLvoid" '_void)
       (cons "const GLubyte *" (pointer-to '_uint8)) ;; TODO: put this back
       (cons "GLsync" '_GLsync)
+      (cons "GLfixed" '_int32) ;; NEW
       (cons "GLhandleARB" '_uint32)
       (cons "GLboolean" '_bool)
       (cons "struct _cl_event *" '_pointer)
@@ -462,7 +464,7 @@
          (else
            (hash-ref vector-to-contract (cast head TType)
                      (lambda() (fprintf anomaly "undocumentable type ~s~n" type)
-                       (cast (broken-contract type) CContract)))
+                       (list 'broken-contract type) ))
            ))))
     ((symbol? type)
      (case type
@@ -482,7 +484,8 @@
        ((_string*/utf-8) '(or/c string? bytes?))
        (else 
          (hash-ref vector-to-contract type (lambda() type)))))
-    (else (cast type CContract))))
+    (else (list 'broken-contract (cons 'cleanup-type-for-doc type)))
+    ))
 
 'after-cleanup-type-for-doc-definition
 
@@ -527,9 +530,9 @@
 (define (racket-type [xmltype : XML]) ; translate the simplest type names.
   (if (string? xmltype)
       (hash-ref basic-type-map xmltype
-                (lambda () (fprintf anomaly "no basic type for ~s~n" xmltype) (broken-type xmltype))
+                (lambda () (fprintf anomaly "no basic type for ~s~n" xmltype) (list 'broken-type xmltype))
                 )
-      (broken-type xmltype)
+      (list 'broken-type xmltype)
       )
   )
 
@@ -591,16 +594,20 @@
                                               )
                                '() ;; placeholder for generating enum translation
                                ]           )              
-       (define names : (Listof Any) '())
-       (define values : (Listof String) '())
+       (define name : (Option Symbol) #f)
+       (define value : (Option String) #f)
        (define aliases : (Listof Any) '())
        (define apis : (Listof Any) '())
        (ann    
         (for ([attr : Any xmlattributes])
           
           (match attr
-            [(list 'value v) (set! values (cons (cast v String) values))]
-            [(list 'name n) (set! names (cons n names))]
+            [(list 'value v)
+             (when value (fprintf anomaly "; Too many values in enum ~s~n" value))
+             (set! value  (cast v String))]
+            [(list 'name (? string? n))
+             (when name (fprintf anomaly "; Too many names in enum ~s~n" name))
+             (set! name (string->symbol n))]
             [(list 'alias a) (set! aliases (cons a aliases))]
             [(cons 'comment _) (fprintf anomaly "; LATER: write comments~n")]
             [(cons 'type _)
@@ -614,23 +621,23 @@
             )
           )
         Void)
-       (unique names "; TODO: not just one name in enum ~s~n" names)
-       (unique values "; TODO: not just one value in enum ~s ~s~n" names values)
+       (when (not value) (fprintf anomaly "No value in enum ~s~n" item))
+       (when (not name) (fprintf anomaly "No name in enum ~s~n" item))
+
        (define api (atmostone apis "; TODO: not just one api. ~s~n" apis))
        (fprintf anomaly ";;;;;api is ~s.~n" api)
-       (ann (unless (member api '("gles2"))
+       (ann (unless (member api '("gles2")) ; TODO: what else needs to be in this list?
               #| This is an opengl binding, not a gles binding
          opengl and gles have different definitions for some symbols,
          but Khronos lists all of them in the opengl registry.
          |#
-              (for ([name names] [value values])
-                ; and there should be only one of each, so only one iteration.
-                (fprintf output "(define ~a ~a)~n" name (rehexify value))
-                (fprintf output "~s~n" (list 'provide name))
-                (for ([a aliases])
-                  (fprintf output "; alias for ~s~n" a)
-                  #;(fprintf output "~a~n" (list 'provide a))
-                  ))
+              (fprintf output "(define ~a ~a)~n" name
+                       (if (string? value) (rehexify (cast value String)) "NOVALUE"))
+              (fprintf output "~s~n" (list 'provide name))
+              (for ([a aliases])
+                (fprintf output "; alias for ~s~n" a)
+                #;(fprintf output "~a~n" (list 'provide a))
+                )
               )
             Void)
        ]
@@ -666,19 +673,20 @@
 ; Rename types
 
 
-(struct prototype ([ptype : Any] [name : Symbol] [group : Any]))
+(struct prototype ([ptype : TType] [name : Symbol] [group : Any]))
 
 ( : process-proto [ -> XML prototype])
 
 (define (process-proto [proto : XML])
   ;; I wonder why Khronos considers the param not to be part of the proto?
   ;; They split the identifier's type into two separate XML elements.
-  (define ptypes '()) ; should be only one
-  (define names '()) ; should be only one
+  (define ptype : (Option XML) #f) ; should be only one
+  (define name : (Option Symbol) #f) ; should be only one
   (define groups '()) ; should be at most one
   (for [(p proto)]
     (match p
-      ["void " (set! ptypes (cons '_void ptypes))]
+      ["void " (if ptype (fprintf anomaly "too many ptypes ~s in protoype ~s~n" ptype p)
+                   (set! ptype "void"))]
       ; TODO: Is thre an important distinction between void here and a ptype element?
       [(cons '@ qattributes)
        (define attributes (cast qattributes (Listof XML)))
@@ -690,22 +698,25 @@
                       a proto)]
            )
          )]
-      [(list 'name s) (set! names (cons s names))]
-      [(list 'ptype s) (set! ptypes (cons s ptypes))
+      [(list 'name (? string? s))
+       (when name (fprintf anomaly "too many names ~s in prototype ~s~n" s p))
+       (set! name (string->symbol (strip-white s)))]
+      [(list 'ptype s) (if ptype (fprintf anomaly "too many ptypes ~s in protoype ~s~n" ptype p)
+                           (set! ptype (cast s XML)))
                        (fprintf anomaly "NOTE: ptype directly in proto")
                        ] ; TODO: This seems never to occur.
       [(cons glx rest) (fprintf anomaly "; LATER: what to do with glx? ~s~n" p)]
       [ _ (fprintf anomaly "; TODO: unknown component ~s of prototype ~s~n" p proto)]
       )
     )
-    (define name (string->symbol (strip-white
-      (cast (unique names ":TODO: too many names ~s in protoype ~s~n" names proto) String))))
-    (define ptype
-      (cast (unique ptypes ":TODO: too many ptypes ~s in protoype ~s~n" ptypes proto) XML))
+  (when (not name) (fprintf anomaly "no name in prototype ~s~n" proto) (set! name 'missingnameinproto))
+  (when (not ptype) (fprintf anomaly "no type in prototype ~s~n" proto) (set! name 'missingtypeinproto))
   #;(fprintf anomaly "process-proto sees groups ~s~n" groups)
   (define group
     (atmostone groups "; TODO: not just one group ~s in prototype" groups proto))
-  (prototype (racket-type ptype) name group) ; Do we want racket-type here?
+  (when ( not ptype ) (fprintf anomaly "no type in proto ~s~n" proto) (set! ptype "_void"))
+  #;(fprintf anomaly "!!!! plain type in prototype is ~s~n" ptype)
+  (prototype (racket-type (cast ptype XML)) (cast name Symbol) group) ; Do we want racket-type here?
   )
 
 
@@ -742,21 +753,23 @@
 
 (struct parameter
  
-  ([type : XML] [name : String] [len : String] [const? : Boolean] [stars : Integer])
+  ([type : XML] [name : Symbol] [len : (Option String)] [const? : Boolean] [stars : Integer])
   ; #:methods gen:custom-write [(define write-proc parameter-print)]
   )
 
 ( : primitive-ctype ( -> String TType ))
 (define (primitive-ctype [t2 : String]) ; TODO TODO TODO 
-  (hash-ref basic-type-map t2 (lambda () (broken-type t2)))
+  (hash-ref basic-type-map t2 (lambda () (list 'broken-type t2)))
   )
 
 (: parse-param ( -> (Listof XML) parameter)) 
 (define (parse-param (param : (Listof XML)))
   ; parse a param entity and produce a struct parameter object
-  (define types '())
-  (define names '())
-  (define lengths '())
+  (define type : (Option String) #f)
+  (define (set-type! [t : String]) (when type (fprintf anomaly "Too many types in param ~s ~s~n" type t))
+    (set! type t))
+  (define name : (Option Symbol) #f)
+  (define length : (Option String) #f)
   (define const? : Boolean #f)
   (define stars 0)
   (for [(p param)]
@@ -764,26 +777,27 @@
       [(list '@ (list 'group g))
        (fprintf anomaly
                 "; LATER: figure out what these groups in param's are for.~n")]
-      [(list 'ptype t) (set! types (cons t types))]
-      [(list 'name ( ? string? n)) (set! names (cons (string->symbol (strip-white n)) names))]
-      [(or (list '@ (list 'len len))
-           (list '@ (list 'len len) (list 'group _))) ; TODO: what's group?
-           (set! lengths (cons len lengths))
+      [(list 'ptype ( ? string? ty)) (set-type! ty)]
+      [(list 'name ( ? string? n))
+       (if name (fprintf anomaly "; TODO: not just one name ~s in param ~s~n" name param)
+           (set! name (string->symbol (strip-white n))))
+       ]
+      [(or (list '@ (list 'len (? string? len)))
+           (list '@ (list 'len (? string? len)) (list 'group _))) ; TODO: what's group?
+           (if length (fprintf anomaly "; TODO: not just one length ~s in param ~s~n" len param)
+               (set! length len))
            (fprintf anomaly "length ~s in param ~s~n" p param)
            ]
       ["const " (set! const? #t)
                 #;(fprintf anomaly "const ~s in param ~s~n" p param)] ; TODO: is this really an anomaly here?
       [" *" (set! stars ( + 1 stars))
             (fprintf anomaly "star ~s in param ~s~n" p param)]
+      ["const void *" (set! stars (+ 1 stars)) (set! const? #t) (set-type! "void")]
       [_ (fprintf anomaly "; TODO: strange param specifier ~s~n" p)]
     ))
-  (define type (cast (unique types
-                       "; TODO: not just one type ~s in param ~s~n" types param) XML))
-  (define name (cast (unique names
-                       "; TODO: not just one name ~s in param ~s~n" names param) String))
-  (define len (cast (atmostone lengths
-                         "; TODO: not just one length ~s in param ~s~n" names param) String) )
-  (parameter type name len const? stars)
+  (when (not name) (fprintf anomaly "Missing name in param ~s~n" param) (set! name 'missing-name))
+  (when (not type) (fprintf anomaly "Missing name in param ~s~n" param) (set-type! "missing-type"))
+  (parameter (cast type String) (cast name Symbol) length const? stars)
     #;(list name ': (racket-type type))
   )
 
@@ -791,20 +805,38 @@
 
 (define (param-to-contract) (void))
 
-(: param->ctype ( -> parameter (List Boolean String ': TType)))
+(: param->ctype ( -> parameter (List Boolean Symbol ': TType)))
 
 (define (param->ctype param) ; TODO TODO TODO Should this be parameter->ctype?
-  #;(fprintf trace "DEBUG: param->ctype ~s~n" param)
+  (fprintf trace "DEBUG: param->ctype ~s~n" param) (parameter-print param trace) (fprintf trace "~n")
   (match param
-    [ (parameter (or '_byte '_char 'char "GLchar") name (or "COMPSIZE(name)" '()) #t 1)
+    [ (parameter (or '_byte '_char 'char "GLchar" "GLcharARB") name (or "COMPSIZE(name)" #f) #t 1)
       (list #f name ': '_string*/utf-8 )]
+    [ (parameter (or "GLbyte") name (or "3" #f) #t 1)
+      (list #f name ': '(_s8vector i) )]
+    [ (parameter (or "GLdouble") name (or "3" #f) #t 1)
+      (list #f name ': '(_f64vector i) )]
+    [ (parameter (or "GLfloat") name (or "3" #f) #t 1)
+      (list #f name ': '(_f32vector i) )]
+    [ (parameter (or "GLint") name (or "3" #f) #t 1)
+      (list #f name ': '(_s32vector i) )] ;; or i64?
+    [ (parameter (or "GLshort") name (or "3" #f) #t 1)
+      (list #f name ': '(_s16vector i) )] ;; or i64?
     [ (parameter "GLuint" name "n" #t 1)
       (list #f name ': '(_u32vector i))]
+    [ (parameter "void" name "COMPSIZE(type,stride)" #t 1)
+      (list #f name ': '_pointer/intptr)]
+    [ (parameter "const void *" name "COMPSIZE(type,stride)" outety 1) ;; TODO: still not recognised
+      ;; TODO Turns out the type slot "const void *" is actually '().
+      (list #f name ': '(_pointer/intptr i))]
     [ (parameter "GLboolean" name "n" #f 1)
-      (list #t name ': '(_vector o _bool n))] ; the #t indicates that this parameter is used for output.
-    [ (parameter t "residences" l c s) ; debugging catchall; should not be used
-      (list #f "residences" ': (broken-type (cons "param->ctype" parameter)))]
-    [ (parameter t name (not '()) c? (not 0)) (list #f name ': '_cptr) ]
+      (list #t name ': '(_vector o _bool n)) ; the #t indicates that this parameter is used for output.
+      ; TODO: Find out how to determine this from the XML
+      ; when you have a pointer and it's not const.
+    ]
+    #;[ (parameter t "residences" l c s) ; debugging catchall; should not be used
+      (list #f "residences" ': (list 'broken-type (cons "param->ctype" parameter)))]
+    [ (parameter t name (not '()) c? (not 0)) (list (not c?) name ': '_cptrxx) ]
     [ (parameter ( ? string? type) name len const? stars)
       (fprintf trace "DEBUG: param->ctype ~s ~s ~s ~s ~s ~n"
                type name len const? stars)
@@ -825,13 +857,13 @@
          #| This could be match ( (parameter (or '_byte '_char 'char "GLchar) n "COMPSIZE(name)" #t 1) |#
          (set! t '_string*/utf-8)
          (when (or (not (equal? stars 0)) (not (null? len)))
-             (set! t '_cptr)
+             (set! t '_cptrxy)
              )
          )
       (list #f name ': t)
       ]
-    [ _ (fprintf anomaly "Unrecognised param ~s~n" param)
-        (list #f "broken" ': (broken-type param))]
+    [ _ (fprintf anomaly "Unrecognised param") (parameter-print param anomaly) (fprintf anomaly "~n")
+        (list #f 'broken ': (list 'broken-type param))]
     )
   )
 #;(define (param->ctype param)
@@ -849,7 +881,7 @@
             (set! type '(_u32vector i) )
             )
            ( (not (null? len))
-             (set! type '_cptr)
+             (set! type '_cptrxz)
              )
            )
          )
@@ -860,7 +892,7 @@
     )
   )
 
-(: params->ctypes ( -> (Listof parameter) (Listof (List Boolean String ': TType))))
+(: params->ctypes ( -> (Listof parameter) (Listof (List Boolean Symbol ': TType))))
 (define (params->ctypes params) ; params contains parameters in ???reverse order
   ; Return a list of the ctypes of the parameters, also in reverse order.
   #;(fprintf trace "DEBUG: params->ctypes ~s~n" params) ; <><>><
@@ -872,8 +904,10 @@
      ]
     (#t (fprintf anomaly "; What is ~s doing in my parameter list?~n" params) )
     ))
+(define (is-input-arg [x : (List Boolean Symbol ': TType)]) (not (car x)))
+(define (is-output-arg [x : (List Boolean Symbol ': TType)]) (car x))
 
-(: get-output-ctypes ( -> (Listof (List Boolean String ': TType)) (Listof (List String ': TType))))
+(: get-output-ctypes ( -> (Listof (List Boolean Symbol ': TType)) (Listof (List Symbol ': TType))))
 (define (get-output-ctypes params) ; params is a list of parameters in ???reverse order each in the (#t n : t) or (n : t) form
   ; return a list of the output parameters, also in reerseorder.
   ; Output parameters are parameters which point to memory
@@ -891,32 +925,38 @@
 
 (define (process-command [command : (Listof XML)])
   (fprintf output "~n") ; TODO this line is temporary code
-  (define name : (Option Symbol) #f) ; TODO: check there's only one
-  (define resulttype '()) ; TODO: check there's only one
+  (define name : (Option Symbol) #f)
+  (define resulttype : (Option TType) #f)
   (define group : (Option XML) #f)
-  (define proto : (Option prototype) #f); TODO: check there's only one
+  (define proto : (Option prototype) #f)
   (define params : (Listof parameter)'()) ; list of parameters in reverse order
   (define glxtype : (Option String) #f)
   (define opcode : (Option String) #f)
   (for ([item command])
     (match item
-      #;[(list 'proto t (list 'name n))
+      #;[(list 'proto ty (list 'name n))
   `       (set! resulttype
-`             (if (and (string? t) (equal? "void" (strip-white t))) '_void t))
-`         `
+`             (if (and (string? ty) (equal? "void" (strip-white ty))) '_void ty))
+`         (fprintf anomaly "resulttype set to ~s~n" resulttype)`
 `         (set! name (string->symbol (strip-white n)))
        ]
       [(cons 'proto rest)
+       (when proto (fprintf anomaly "Too many protos ~s in command ~s~n" item command))
        (set! proto (process-proto (cast rest (Listof XML))))
        (match proto
-         [(prototype t n g) ; formerly list n ': t)
+         [(prototype ty n g) ; formerly list n ': t)
+          ;#(fprintf anomaly "!!!! prottype's type is ~s~n" ty)
           (when name (fprintf anomaly "Too many names ~s ~s~n" name n))
           (set! name n)
-          (when resulttype (fprintf anomaly "Too many result types ~s ~s`n" resulttype t))
- `        (set! resulttype
-                (if (and (string? t) (equal? "void" (strip-white t))) '_void t))
+
+          (when resulttype (fprintf anomaly "Too many result types ~s ~s`n" resulttype ty))
+          #;(fprintf anomaly "resEEEulttyope was ~s~n" resulttype)
+          #;(fprintf anomaly "set resulttyoe to ~s~n" ty)
+          (set! resulttype ty)
+          #;(fprintf anomaly "resEEulttyope now ~s~n" resulttype)
+
           (when group (fprintf anomaly "Too many groupss ~s ~s`n" group g))
- `        (set! group g) #;(fprintf anomaly "proto had group ~s\n" g)
+          (set! group (cast g XML)) #;(fprintf anomaly "proto had group ~s\n" g)
           ]
          [ _ (fprintf anomaly "; TODO: strange proto in command: ~s~n" command)]
          )]         
@@ -934,36 +974,65 @@
       ))
 
   (when (null? name)
-      #;(fprintf anomaly "; TODO: no name in command definition~n")
+    (fprintf anomaly "; TODO: no name in command definition~n")
     (fprintf anomaly "; TODO: best try:~n #;")
     )
 
-  (fprintf output "TODO: debug: Parameter list is ~s from command ~s~n" params command)
-  (fprintf trace "; DEBUGG ~s~n" (map parameter-type params))
-  (define args (params->ctypes params))
-  (define results : (Listof (List String ': TType)) (get-output-ctypes args))
-  (fprintf output "got results ~s from args ~s~n" results args)
-;  (define rev-regular-type (cons '-> (map (lambda ([a :(List Boolean String ': TType)]) (cdr a)) args))) ; <><><><>
-  (define rev-regular-type (cons '-> (map (ann car (-> (List Boolean String ': TType) Boolean)) args))) ; <><><><>
-  (define rev-type
+  #;(fprintf output "TODO: debug: Parameter list is ~s from command ~s~n" params command)
+  #;(fprintf trace "; DEBUGG ~s~n" (map parameter-type params))
+
+  (define args : (Listof (List Boolean Symbol ': TType)) (params->ctypes params))
+  (define results : (Listof (List Symbol ': TType)) ; parameters used as output variables
+    (get-output-ctypes args))
+  (define in-args : (Listof (List Boolean Symbol ': TType)) ; parametes used as ordinary input variables
+    (filter is-input-arg args))
+  (define out-args : (Listof (List Boolean Symbol ': TType)) ; parameters used as output variables
+    (filter is-output-arg args))
+  (define (code-part [a : (List Boolean Symbol ': TType)]) (cdr a))
+  (define (type-part [a : (List Boolean Symbol ': TType)]) (cadddr a))
+  (fprintf output "!!!! got results ~s from args ~s~n" results args)
+  (define rev-regular-type
+;    (cons '-> (map (ann cdr (-> (List Boolean Symbol ': TType) (List Symbol ': TType))) args))) ; <><><><>
+    (cons '-> (map code-part args)))
+  (fprintf output "!!!! resulttype ~s~n" resulttype)
+  (define rev-type ; the type for the C ffi.
     (if (null? results)
         (cons resulttype rev-regular-type)
-        (cons (cons 'values (cons 'result (map (lambda ([a : (List String ': TType)]) (car a)) (cast results (Listof (List String ': TType))))))
-              (cons '-> (cons (list 'result ': resulttype) rev-regular-type)))
+        (cons (cons 'values
+                    (cons 'result (map (lambda ([a : (List Symbol ': TType)]) (car a))
+                                       (cast results (Listof (List Symbol ': TType)))
+                                       )))
+              (cons '-> (cons (list 'result ': resulttype) rev-regular-type))
+              )
         ))
-  (fprintf output "!!!!! rev-type ~s~n" rev-type)
+  (define racket-results (filter is-output-arg args))
+  (define racket-type
+        `( ->> ; this part is still very wwrong and currently generates gibberish.
+           ,@(reverse
+              (map cleanup-type-for-doc ; racket-contract
+                   (map (ann cadddr(-> (List Boolean Symbol ': TType) TType) ) in-args)
+                   )
+              )
+           ,@(if (null? results)
+                 (list (cleanup-type-for-doc (or resulttype '_void)))
+                 `((values ,(cleanup-type-for-doc(cast resulttype TType))
+                           ,@(map cleanup-type-for-doc (map type-part racket-results))
+                           )
+                           ))
+           )
+    )
+  
+  #;(fprintf output "!!!!! rev-type ~s~n" rev-type)
   (fprintf output "~s~n"
            (list 'define-gl name
                  (- (length params) (length results)) ; This is wroneg.  I suspect is has to be altered when there are output parameters, but I don't really know.
                    (reverse rev-type) ; the ctype of the function
-                   (cons '->> ; this part is still very wwrong and currently generates gibberish.
-                         (reverse (cons (racket-contract resulttype)
-                                             (map racket-contract ; <><><>
-                                                  #;(map parameter-type params)
-                                                  (map (ann cadddr(-> (List Boolean String ': TType) TType) ) args)
-                                                  )
-                                             )))
-                   (if (equal? group "ErrorCode") 'void 'check-gl-error)
+                   racket-type
+                   (cond ((equal? group "ErrorCode") 'void)
+                       ((eq? name 'glBegin) 'check-gl-error-begin)
+                       ((eq? name 'glEnd) 'check-gl-error-end)
+                       (else 'check-gl-error)
+                       )
                    ; TODO: when to generate check-gl-error?
                    ; glGetError has void instead of check-gl-error in this spot
                    ;    in the old binding.
@@ -973,7 +1042,7 @@
                    ; Maybe ... group="ErrorCode" as a prototype attribute should tell me to generate void instead of check-gl-error.
                    )
            )
-  (unless (or (null? opcode) (null? glxtype))
+  (when (or opcode glxtype)
       (fprintf anomaly "; LATER: what to do with type ~s opcode ~s~n"
                glxtype opcode))
   )
