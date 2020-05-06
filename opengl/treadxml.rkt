@@ -793,6 +793,8 @@
       [" *" (set! stars ( + 1 stars))
             (fprintf anomaly "star ~s in param ~s~n" p param)]
       ["const void *" (set! stars (+ 1 stars)) (set! const? #t) (set-type! "void")]
+      ["const void **" (set! stars (+ 2 stars)) (set! const? #t) (set-type! "void")]
+      [" *const*"(set! stars (+ 2 stars)) (set! const? #t)] ; TODO: I don't really have a mechanism for *const*
       [_ (fprintf anomaly "; TODO: strange param specifier ~s~n" p)]
     ))
   (when (not name) (fprintf anomaly "Missing name in param ~s~n" param) (set! name 'missing-name))
@@ -812,21 +814,56 @@
   (match param
     [ (parameter (or '_byte '_char 'char "GLchar" "GLcharARB") name (or "COMPSIZE(name)" #f) #t 1)
       (list #f name ': '_string*/utf-8 )]
-    [ (parameter (or "GLbyte") name (or "3" #f) #t 1)
+    [ (parameter (or "GLbyte") name (or "3" "4" #f) #t 1)
       (list #f name ': '(_s8vector i) )]
-    [ (parameter (or "GLdouble") name (or "3" #f) #t 1)
+    [ (parameter (or "GLdouble") name (or "3" "4" #f) #t 1)
       (list #f name ': '(_f64vector i) )]
-    [ (parameter (or "GLfloat") name (or "3" #f) #t 1)
+    [ (parameter (or "GLdouble") name "4" #f 1)
+      (list #f name ': '(_f64vector o 4) )]
+    [ (parameter (or "GLfloat") name
+                 (or "2" "3" "4" #f "COMPSIZE(buffer)" "COMPSIZE(pname)" "COMPSIZE(numPaths,transformType)" )
+                 #t 1)
       (list #f name ': '(_f32vector i) )]
-    [ (parameter (or "GLint") name (or "3" #f) #t 1)
+    [ (parameter (or "GLdouble") name "4" #f 1)
+      (list #f name ': '(_f32vector o 4) )]
+    [ (parameter (or "GLint") name (or "3" "4" #f "COMPSIZE(buffer)"  "COMPSIZE(pname)" "count") #t 1)
       (list #f name ': '(_s32vector i) )] ;; or i64?
-    [ (parameter (or "GLshort") name (or "3" #f) #t 1)
+    [ (parameter (or "GLshort") name (or "3" "4" #f) #t 1)
       (list #f name ': '(_s16vector i) )] ;; or i64?
-    [ (parameter "GLuint" name "n" #t 1)
+    [ (parameter (or "GLhalfNV") name (or "3" "4" #f) #t 1)
+      (list #f name ': '(_u16vector i) )] ;; or i64?
+    [ (parameter "GLuint" name "1" #t 1)
+      (list #f name ': '(_ptr i _uint32))]
+    [ (parameter "GLuint" name (or "3" "4" "n" "COMPSIZE(buffer)") #t 1)
       (list #f name ': '(_u32vector i))]
-    [ (parameter "void" name "COMPSIZE(type,stride)" #t 1)
+    [ (parameter "GLushort" name (or "3" "4") #t 1)
+      (list #f name ': '(_u16vector i))]
+    [ (parameter "GLubyte" name (or "COMPSIZE(width,height)" "3" "4") #t 1) ;; ??? The "3" case is for a vector of 3 integers representing colors for glColor3ui
+      (list #f name ': '_string*/utf-8)]
+    [ (parameter "void" name
+                 (or "COMPSIZE(type,stride)"
+                     "COMPSIZE(format,type,width)"
+                     "COMPSIZE(size,type,stride)"
+                     "COMPSIZE(size,type,stride,count)"
+                     "COMPSIZE(n,type)"
+                     "COMPSIZE(format,type)"
+                     "COMPSIZE(format,type,count)"
+                     "COMPSIZE(format,type,width,height)"
+                     "COMPSIZE(numPaths,pathNameType,paths)"
+                     "size" "imageSize")
+                 #t 1)
       (list #f name ': '_pointer/intptr)]
-    [ (parameter "const void *" name "COMPSIZE(type,stride)" outety 1) ;; TODO: still not recognised
+    #;[ (parameter "void" name
+                 (or "COMPSIZE(n,type)"
+                     "COMPSIZE(format,type)"
+                     "COMPSIZE(format,type,count)"
+                     "size" "imageSize") #t 1)
+      (list #f name ': '_pointer/intptr)]
+    [ (parameter "void" name (or "4" "COMPSIZE(size,type,stride)") #t 2)
+      (list #f name ': '(_vector i _pointer/intptr))]
+    [ (parameter "GLchar" name "count" #t 2)
+      (list #f name ': '(_vector i  _string*/utf-8))]
+    #;[ (parameter "const void *" name "COMPSIZE(type,stride)" outety 1) ;; TODO: still not recognised
       ;; TODO Turns out the type slot "const void *" is actually '().
       (list #f name ': '(_pointer/intptr i))]
     [ (parameter "GLboolean" name "n" #f 1)
@@ -834,6 +871,8 @@
       ; TODO: Find out how to determine this from the XML
       ; when you have a pointer and it's not const.
     ]
+    [ (parameter "struct _cl_context" name #f #f 1)
+      (list #f name ': '_pointer)]
     #;[ (parameter t "residences" l c s) ; debugging catchall; should not be used
       (list #f "residences" ': (list 'broken-type (cons "param->ctype" parameter)))]
     [ (parameter t name (not '()) c? (not 0)) (list (not c?) name ': '_cptrxx) ]
